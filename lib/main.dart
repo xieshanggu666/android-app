@@ -882,6 +882,9 @@ class ReportPage extends StatelessWidget {
   Widget build(BuildContext context) {
     final diagnosticCase = state.selectedCase;
     final report = state.report;
+    // 报告未生成时预览当前记录；生成后展示草稿内的快照，保证报告内容与生成时间一致。
+    final shownResults = report?.stepResults ?? state.stepResults.values.toList();
+    final stale = report != null && _reportIsStale(report, state);
     return WorkbenchScroll(
       children: [
         const SectionTitle(
@@ -895,6 +898,22 @@ class ReportPage extends StatelessWidget {
           label: const Text('生成报告草稿'),
         ),
         const SizedBox(height: 12),
+        if (stale)
+          Container(
+            width: double.infinity,
+            margin: const EdgeInsets.only(bottom: 12),
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+            decoration: BoxDecoration(
+              color: const Color(0xFFFFF4D8),
+              borderRadius: BorderRadius.circular(8),
+            ),
+            child: Text(
+              '检测步骤在草稿生成后有修改，请重新生成报告草稿以同步最新结果与现场备注。',
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                    color: const Color(0xFF8A5A00),
+                  ),
+            ),
+          ),
         Card(
           child: Padding(
             padding: const EdgeInsets.all(14),
@@ -923,6 +942,12 @@ class ReportPage extends StatelessWidget {
                       ),
                     ),
                 const Divider(height: 24),
+                ReportStepResults(
+                  steps: diagnosticCase?.steps ?? const <GuidedStep>[],
+                  results: shownResults,
+                  isDraftSnapshot: report != null,
+                ),
+                const Divider(height: 24),
                 Text(
                   '生成时间：${report == null ? '-' : DateFormat('yyyy-MM-dd HH:mm').format(report.createdAt)}',
                   style: Theme.of(context).textTheme.bodySmall,
@@ -932,6 +957,134 @@ class ReportPage extends StatelessWidget {
           ),
         ),
       ],
+    );
+  }
+
+  bool _reportIsStale(RepairReport report, DiagnosticState state) {
+    for (final result in report.stepResults) {
+      final current = state.stepResults[result.stepId];
+      if (current == null ||
+          current.status != result.status ||
+          current.note != result.note) {
+        return true;
+      }
+    }
+    return false;
+  }
+}
+
+class ReportStepResults extends StatelessWidget {
+  const ReportStepResults({
+    super.key,
+    required this.steps,
+    required this.results,
+    required this.isDraftSnapshot,
+  });
+
+  final List<GuidedStep> steps;
+  final List<StepResult> results;
+  final bool isDraftSnapshot;
+
+  @override
+  Widget build(BuildContext context) {
+    final byId = {for (final step in steps) step.id: step};
+    final recorded =
+        results.where((result) => result.status != StepStatus.pending).length;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text('检测步骤记录', style: Theme.of(context).textTheme.titleSmall),
+        const SizedBox(height: 2),
+        Text(
+          '已记录 $recorded/${results.length} 步'
+          '${isDraftSnapshot ? '（以下为草稿生成时的快照）' : '（生成草稿后随报告保存）'}',
+          style: Theme.of(context).textTheme.bodySmall,
+        ),
+        const SizedBox(height: 8),
+        if (results.isEmpty)
+          const Text('暂无检测步骤。')
+        else
+          for (final result in results)
+            _ReportStepTile(step: byId[result.stepId], result: result),
+      ],
+    );
+  }
+}
+
+class _ReportStepTile extends StatelessWidget {
+  const _ReportStepTile({required this.step, required this.result});
+
+  final GuidedStep? step;
+  final StepResult result;
+
+  @override
+  Widget build(BuildContext context) {
+    final (icon, color, label) = switch (result.status) {
+      StepStatus.pending => (Icons.fiber_manual_record_outlined, Colors.grey, '待检测'),
+      StepStatus.pass => (Icons.check_circle_outline, const Color(0xFF2E7D32), '通过'),
+      StepStatus.fail => (Icons.cancel_outlined, const Color(0xFFB3261E), '异常'),
+      StepStatus.skipped => (Icons.skip_next_outlined, const Color(0xFF8A5A00), '跳过'),
+    };
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 10),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Icon(icon, size: 18, color: color),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  step?.title ?? result.stepId,
+                  style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                        fontWeight: FontWeight.w600,
+                      ),
+                ),
+              ),
+              Text(label, style: Theme.of(context).textTheme.labelMedium?.copyWith(color: color)),
+            ],
+          ),
+          if (step != null) ...[
+            const SizedBox(height: 2),
+            Padding(
+              padding: const EdgeInsets.only(left: 26),
+              child: Text(
+                '判定标准：${step!.expected}',
+                style: Theme.of(context).textTheme.bodySmall,
+              ),
+            ),
+          ],
+          Padding(
+            padding: const EdgeInsets.only(left: 26, top: 4),
+            child: Container(
+              width: double.infinity,
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+              decoration: BoxDecoration(
+                color: const Color(0xFFF3F2EE),
+                borderRadius: BorderRadius.circular(6),
+              ),
+              child: Text(
+                result.note.trim().isEmpty ? '未填写现场备注' : result.note,
+                style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                      color: result.note.trim().isEmpty ? Colors.grey : null,
+                      fontStyle:
+                          result.note.trim().isEmpty ? FontStyle.italic : null,
+                    ),
+              ),
+            ),
+          ),
+          Padding(
+            padding: const EdgeInsets.only(left: 26, top: 2),
+            child: Text(
+              '更新时间：${DateFormat('yyyy-MM-dd HH:mm').format(result.updatedAt)}',
+              style: Theme.of(context).textTheme.bodySmall
+                  ?.copyWith(color: Colors.grey),
+            ),
+          ),
+        ],
+      ),
     );
   }
 }
