@@ -18,6 +18,26 @@ void main() {
     await tester.pumpAndSettle(const Duration(seconds: 1));
     expect(find.text('虚拟 ELM327 / 离线演示'), findsOneWidget);
     expect(find.textContaining('车间 OBD-II 蓝牙适配器'), findsOneWidget);
+    expect(find.text('暂不可用'), findsOneWidget);
+  });
+
+  testWidgets('未接入真实蓝牙协议时，占位适配器无法连接并给出明确错误', (tester) async {
+    await tester.pumpWidget(const ObdAssistantApp());
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('扫描蓝牙 OBD'));
+    await tester.pumpAndSettle(const Duration(seconds: 1));
+
+    // “暂不可用”按钮处于禁用态，用户无法发起连接。
+    final unavailableButton = find.widgetWithText(FilledButton, '暂不可用');
+    expect(tester.widget<FilledButton>(unavailableButton).onPressed, isNull);
+
+    // 页面仍停留在未连接状态，也不出现任何“正在接收实测 PID”的误导文案。
+    expect(find.text('未连接，支持虚拟 OBD 或真实蓝牙入口'), findsOneWidget);
+    expect(
+      find.textContaining('已连接真实蓝牙 OBD，正在接收实测 PID'),
+      findsNothing,
+    );
   });
 
   testWidgets('虚拟设备的模拟读数全程标注，且不进入维修报告', (tester) async {

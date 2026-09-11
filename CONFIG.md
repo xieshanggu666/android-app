@@ -18,6 +18,8 @@ final bluetoothObdSourceProvider = Provider<ObdSource>((ref) {
 
 `VirtualObdSource` 可在完全断网、无 OBD 设备时演示完整界面流程，但读数始终标注为“模拟”。
 
+`BluetoothObdSource` 在真实协议接入前不会伪造可连接硬件：扫描只返回一个 `available: false` 的灰色入口，调用 `connect` 会抛出 `ObdHardwareUnavailable`，应用据此停留在未连接态并提示原因，不会显示“已连接/正在接收实测 PID”。
+
 接入真实 ELM327 / BLE OBD 时，在 `lib/services/obd_source.dart` 的 `BluetoothObdSource` 中完成：
 
 - 蓝牙扫描

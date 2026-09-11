@@ -1,6 +1,6 @@
 enum ConnectionMode { virtual, bluetooth }
 
-enum ObdConnectionStatus { disconnected, scanning, connected }
+enum ObdConnectionStatus { disconnected, scanning, connecting, connected }
 
 enum StepStatus { pending, pass, fail, skipped }
 
@@ -10,12 +10,28 @@ class ObdDevice {
     required this.name,
     required this.signalStrength,
     required this.mode,
+    // 扫描结果中存在但当前构建不支持实际连接的设备（如尚未接入协议的
+    // 真实蓝牙入口）必须显式标记为不可用，避免被当成可连接硬件。
+    this.available = true,
+    this.unavailableReason,
   });
 
   final String id;
   final String name;
   final int signalStrength;
   final ConnectionMode mode;
+  final bool available;
+  final String? unavailableReason;
+}
+
+/// 数据源声明当前构建无法连接真实硬件时抛出，由 controller 转成用户可见错误。
+class ObdHardwareUnavailable implements Exception {
+  const ObdHardwareUnavailable(this.message);
+
+  final String message;
+
+  @override
+  String toString() => message;
 }
 
 class PidDefinition {

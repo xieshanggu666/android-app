@@ -31,6 +31,7 @@ class DiagnosticState {
     this.loading = true,
     this.status = ObdConnectionStatus.disconnected,
     this.connectionMode,
+    this.connectionError,
     this.devices = const [],
     this.vehicles = const [],
     this.cases = const [],
@@ -47,6 +48,7 @@ class DiagnosticState {
   final bool loading;
   final ObdConnectionStatus status;
   final ConnectionMode? connectionMode;
+  final String? connectionError;
   final List<ObdDevice> devices;
   final List<VehicleProfile> vehicles;
   final List<DiagnosticCase> cases;
@@ -67,6 +69,7 @@ class DiagnosticState {
     bool? loading,
     ObdConnectionStatus? status,
     Object? connectionMode = _unset,
+    Object? connectionError = _unset,
     List<ObdDevice>? devices,
     List<VehicleProfile>? vehicles,
     List<DiagnosticCase>? cases,
@@ -85,6 +88,9 @@ class DiagnosticState {
       connectionMode: connectionMode == _unset
           ? this.connectionMode
           : connectionMode as ConnectionMode?,
+      connectionError: connectionError == _unset
+          ? this.connectionError
+          : connectionError as String?,
       devices: devices ?? this.devices,
       vehicles: vehicles ?? this.vehicles,
       cases: cases ?? this.cases,
@@ -154,7 +160,10 @@ class DiagnosticController extends Notifier<DiagnosticState> {
   }
 
   Future<void> scanDevices() async {
-    state = state.copyWith(status: ObdConnectionStatus.scanning);
+    state = state.copyWith(
+      status: ObdConnectionStatus.scanning,
+      connectionError: null,
+    );
     // 同时扫描虚拟演示设备和真实蓝牙设备，两类入口分别标注来源。
     final results = await Future.wait([
       ref.read(virtualObdSourceProvider).scan().first,
@@ -168,15 +177,49 @@ class DiagnosticController extends Notifier<DiagnosticState> {
   }
 
   Future<void> connect(ObdDevice device) async {
+    // 不可用设备（如尚未接入协议的真实蓝牙入口）直接拒绝，
+    // 绝不能进入 connected/isMeasuring 状态。
+    if (!device.available) {
+      state = state.copyWith(
+        status: ObdConnectionStatus.disconnected,
+        connectionMode: null,
+        connectionError:
+            device.unavailableReason ?? '该设备当前无法连接，请选择其他设备。',
+        liveReadings: const {},
+        history: const {},
+      );
+      return;
+    }
     await _pidSubscription?.cancel();
     _pidSubscription = null;
+    state = state.copyWith(
+      status: ObdConnectionStatus.connecting,
+      connectionError: null,
+    );
     final source = _sourceFor(device);
-    await source.connect(device);
+    try {
+      await source.connect(device);
+    } on Object catch (error) {
+      // 连接失败（硬件未接入/未发现设备/超时）：回到未连接并给出明确原因，
+      // 不允许保留“已连接、正在接收实测 PID”的假象。
+      _activeSource = null;
+      state = state.copyWith(
+        status: ObdConnectionStatus.disconnected,
+        connectionMode: null,
+        connectionError: error is ObdHardwareUnavailable
+            ? error.message
+            : '连接 ${device.name} 失败：$error',
+        liveReadings: const {},
+        history: const {},
+      );
+      return;
+    }
     _activeSource = source;
     // 新连接建立前清空上一轮读数，防止把旧会话的数据归因到新设备。
     state = state.copyWith(
       status: ObdConnectionStatus.connected,
       connectionMode: device.mode,
+      connectionError: null,
       liveReadings: const {},
       history: const {},
     );
@@ -214,6 +257,7 @@ class DiagnosticController extends Notifier<DiagnosticState> {
     state = state.copyWith(
       status: ObdConnectionStatus.disconnected,
       connectionMode: null,
+      connectionError: null,
       liveReadings: const {},
       history: const {},
     );
@@ -282,9 +326,10 @@ class DiagnosticController extends Notifier<DiagnosticState> {
   }
 
   List<String> _measuredCandidates(DiagnosticCase diagnosticCase) {
-    // 只有连接真实蓝牙设备且收到标记为实测来源的读数时，才允许判为“实测异常”。
-    // 虚拟演示源的模拟波形、离线案例参考值都不能作为实测证据进入报告。
-    if (!state.isMeasuring) {
+    // 只有连接真实蓝牙设备且确实收到标记为实测来源的读数时，才允许判为“实测异常”。
+    // 虚拟演示源的模拟波形、离线案例参考值、已连接但尚未收到数据的会话，
+    // 都不能作为实测证据进入报告。
+    if (!state.isMeasuring || state.liveReadings.isEmpty) {
       return const [];
     }
     final definitions = {for (final pid in state.pidCatalog) pid.id: pid};

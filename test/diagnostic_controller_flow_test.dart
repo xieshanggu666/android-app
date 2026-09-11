@@ -156,6 +156,15 @@ const _bluetoothDevice = ObdDevice(
   mode: ConnectionMode.bluetooth,
 );
 
+const _unavailableBluetoothDevice = ObdDevice(
+  id: 'bt-placeholder',
+  name: '车间 OBD-II 蓝牙适配器（真实蓝牙入口）',
+  signalStrength: 0,
+  mode: ConnectionMode.bluetooth,
+  available: false,
+  unavailableReason: BluetoothObdSource.unavailableMessage,
+);
+
 Future<void> _settle() => Future<void>.delayed(Duration.zero);
 
 void main() {
@@ -299,6 +308,36 @@ void main() {
     expect(after.connectionMode, isNull);
     expect(after.liveReadings, isEmpty);
     expect(after.history, isEmpty);
+  });
+
+  test('连接不可用的占位蓝牙设备：拒绝连接并报错，不进入测量状态', () async {
+    await createController();
+
+    controller.selectCase('case_a');
+    await _settle();
+    await controller.connect(_unavailableBluetoothDevice);
+    await _settle();
+    final state = container.read(diagnosticControllerProvider);
+
+    expect(state.status, ObdConnectionStatus.disconnected,
+        reason: '不可用设备绝不能进入已连接态');
+    expect(state.isMeasuring, isFalse);
+    expect(state.connectionMode, isNull);
+    expect(state.liveReadings, isEmpty);
+    expect(state.connectionError,
+        contains('尚未接入真实蓝牙 OBD 协议'));
+    expect(bluetoothSource.connectedDevice, isNull);
+
+    // 失败后生成报告同样不能出现实测异常。
+    controller.generateReport();
+    expect(
+      container
+          .read(diagnosticControllerProvider)
+          .report!
+          .candidateCauses
+          .any((cause) => cause.contains('实测值偏离')),
+      isFalse,
+    );
   });
 
   test('PidReading 默认按虚拟来源处理（fail-safe）', () {

@@ -205,19 +205,21 @@ class ConnectionPage extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final busy = state.status == ObdConnectionStatus.scanning ||
+        state.status == ObdConnectionStatus.connecting;
     return WorkbenchScroll(
       children: [
         SectionTitle(
           icon: Icons.bluetooth_connected,
           title: '设备连接',
-          subtitle: _statusText(state.status, state.connectionMode),
+          subtitle: _statusText(state),
         ),
         FilledButton.icon(
-          onPressed: state.status == ObdConnectionStatus.scanning
-              ? null
-              : controller.scanDevices,
+          onPressed: busy ? null : controller.scanDevices,
           icon: const Icon(Icons.search),
-          label: const Text('扫描蓝牙 OBD'),
+          label: Text(state.status == ObdConnectionStatus.scanning
+              ? '正在扫描…'
+              : '扫描蓝牙 OBD'),
         ),
         if (state.status == ObdConnectionStatus.connected) ...[
           const SizedBox(height: 10),
@@ -227,11 +229,19 @@ class ConnectionPage extends StatelessWidget {
             label: const Text('断开 OBD（清空本次实时读数）'),
           ),
         ],
+        if (state.connectionError != null) ...[
+          const SizedBox(height: 12),
+          ConnectionErrorBanner(message: state.connectionError!),
+        ],
         const SizedBox(height: 12),
         for (final device in state.devices)
           Padding(
             padding: const EdgeInsets.only(bottom: 10),
-            child: DeviceTile(device: device, onConnect: () => controller.connect(device)),
+            child: DeviceTile(
+              device: device,
+              busy: busy,
+              onConnect: () => controller.connect(device),
+            ),
           ),
         const SizedBox(height: 14),
         OfflineLibraryCard(vehicles: state.vehicles),
@@ -239,45 +249,94 @@ class ConnectionPage extends StatelessWidget {
     );
   }
 
-  String _statusText(ObdConnectionStatus status, ConnectionMode? mode) {
-    return switch (status) {
+  String _statusText(DiagnosticState state) {
+    return switch (state.status) {
       ObdConnectionStatus.disconnected => '未连接，支持虚拟 OBD 或真实蓝牙入口',
       ObdConnectionStatus.scanning => '正在扫描附近设备',
-      ObdConnectionStatus.connected => mode == ConnectionMode.virtual
-          ? '已连接虚拟演示设备：以下均为模拟读数，不会作为实测数据进入报告'
-          : '已连接真实蓝牙 OBD，正在接收实测 PID',
+      ObdConnectionStatus.connecting => '正在连接 OBD 设备…',
+      ObdConnectionStatus.connected =>
+        state.connectionMode == ConnectionMode.virtual
+            ? '已连接虚拟演示设备：以下均为模拟读数，不会作为实测数据进入报告'
+            : state.liveReadings.isEmpty
+                ? '已连接真实蓝牙 OBD，等待车辆数据流…（收到数据前不会作为实测结果写入报告）'
+                : '已连接真实蓝牙 OBD，正在接收实测 PID',
     };
   }
 }
 
-class DeviceTile extends StatelessWidget {
-  const DeviceTile({super.key, required this.device, required this.onConnect});
+class ConnectionErrorBanner extends StatelessWidget {
+  const ConnectionErrorBanner({super.key, required this.message});
 
-  final ObdDevice device;
-  final VoidCallback onConnect;
+  final String message;
 
   @override
   Widget build(BuildContext context) {
-    return Card(
-      child: ListTile(
-        leading: CircleAvatar(
-          backgroundColor: device.mode == ConnectionMode.virtual
-              ? const Color(0xFFE6F4EA)
-              : const Color(0xFFE7F0FF),
-          child: Icon(
-            device.mode == ConnectionMode.virtual ? Icons.memory : Icons.bluetooth,
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+      decoration: BoxDecoration(
+        color: const Color(0xFFFFECE8),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Icon(Icons.error_outline, size: 20, color: Color(0xFFB3261E)),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              message,
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                    color: const Color(0xFF8C1D18),
+                  ),
+            ),
           ),
-        ),
-        title: Text(device.name),
-        subtitle: Text(
-          device.mode == ConnectionMode.virtual
-              ? '信号 ${device.signalStrength}% · 虚拟演示数据源（模拟读数，不进报告）'
-              : '真实蓝牙设备 · 协议接入中，连接后不会用模拟值充数',
-        ),
-        trailing: FilledButton.icon(
-          onPressed: onConnect,
-          icon: const Icon(Icons.link),
-          label: const Text('连接'),
+        ],
+      ),
+    );
+  }
+}
+
+class DeviceTile extends StatelessWidget {
+  const DeviceTile({
+    super.key,
+    required this.device,
+    required this.onConnect,
+    this.busy = false,
+  });
+
+  final ObdDevice device;
+  final VoidCallback onConnect;
+  final bool busy;
+
+  @override
+  Widget build(BuildContext context) {
+    final unavailable = !device.available;
+    return Opacity(
+      opacity: unavailable ? 0.7 : 1,
+      child: Card(
+        child: ListTile(
+          leading: CircleAvatar(
+            backgroundColor: device.mode == ConnectionMode.virtual
+                ? const Color(0xFFE6F4EA)
+                : const Color(0xFFE7F0FF),
+            child: Icon(
+              device.mode == ConnectionMode.virtual ? Icons.memory : Icons.bluetooth,
+            ),
+          ),
+          title: Text(device.name),
+          subtitle: Text(
+            unavailable
+                ? device.unavailableReason ?? '当前构建无法连接该设备'
+                : device.mode == ConnectionMode.virtual
+                    ? '信号 ${device.signalStrength}% · 虚拟演示数据源（模拟读数，不进报告）'
+                    : '真实蓝牙设备 · 协议接入中，连接后不会用模拟值充数',
+          ),
+          trailing: FilledButton.icon(
+            onPressed: (busy || unavailable) ? null : onConnect,
+            icon: Icon(unavailable ? Icons.lock_outline : Icons.link),
+            label: Text(unavailable ? '暂不可用' : '连接'),
+          ),
         ),
       ),
     );
@@ -336,7 +395,9 @@ class PidPage extends StatelessWidget {
         if (state.status != ObdConnectionStatus.connected)
           const LiveReadingsUnavailableCard()
         else if (state.connectionMode == ConnectionMode.virtual)
-          const SimulatedReadingsCard(),
+          const SimulatedReadingsCard()
+        else if (state.liveReadings.isEmpty)
+          const WaitingForLiveReadingsCard(),
         Wrap(
           spacing: 10,
           runSpacing: 10,
@@ -427,6 +488,42 @@ class SimulatedReadingsCard extends StatelessWidget {
               '当前连接的是虚拟演示设备：所有读数均为模拟生成，仅用于演示界面，不会标记为实测数据，也不会写入维修报告。',
               style: Theme.of(context).textTheme.bodySmall?.copyWith(
                     color: const Color(0xFF5F4300),
+                  ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class WaitingForLiveReadingsCard extends StatelessWidget {
+  const WaitingForLiveReadingsCard({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: double.infinity,
+      margin: const EdgeInsets.only(bottom: 12),
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+      decoration: BoxDecoration(
+        color: const Color(0xFFE7F0FF),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const SizedBox(
+            width: 16,
+            height: 16,
+            child: CircularProgressIndicator(strokeWidth: 2),
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              '已连接真实蓝牙 OBD，正在等待车辆数据流。收到数据前下方仍显示案例参考值，且不会有任何读数作为实测结果进入报告；若长时间无数据，请检查适配器与车辆连接。',
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                    color: const Color(0xFF0B3D91),
                   ),
             ),
           ),

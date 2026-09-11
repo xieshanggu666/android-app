@@ -77,21 +77,29 @@ class VirtualObdSource implements ObdSource {
 }
 
 /// 真实蓝牙适配器数据源。现场版本在此接入 flutter_blue_plus；
-/// 当前原型未实现真实协议，扫描只提供入口、连接后不产出任何读数。
+/// 当前原型未实现真实协议：扫描不伪造任何可连接设备，连接一律失败，
+/// 调用方必须向用户如实报告“未发现/未接入硬件”，不能进入已连接态。
 /// 未来接入真实流时，读数必须带 source: ConnectionMode.bluetooth。
 class BluetoothObdSource implements ObdSource {
   const BluetoothObdSource();
+
+  /// 当前构建尚未接入真实蓝牙协议，真实设备无法连接的说明。
+  static const unavailableMessage =
+      '当前构建尚未接入真实蓝牙 OBD 协议，无法发现或连接车间适配器；请改用虚拟演示设备。';
 
   @override
   Stream<List<ObdDevice>> scan() async* {
     // The real adapter is intentionally isolated behind this source so field
     // builds can replace the virtual mode without changing the diagnostic UI.
+    // 这不是扫描发现的硬件：仅作为灰色入口，告诉用户真实协议尚未接入。
     yield const [
       ObdDevice(
         id: 'bt-placeholder',
         name: '车间 OBD-II 蓝牙适配器（真实蓝牙入口）',
         signalStrength: 0,
         mode: ConnectionMode.bluetooth,
+        available: false,
+        unavailableReason: unavailableMessage,
       ),
     ];
   }
@@ -103,8 +111,9 @@ class BluetoothObdSource implements ObdSource {
         'BluetoothObdSource 只能连接真实蓝牙设备，不能连接 ${device.mode.name} 设备。',
       );
     }
-    // TODO(field-build): 使用 flutter_blue_plus 建立连接并读取真实 PID。
-    return Future.value();
+    // 真实 flutter_blue_plus 接入前直接失败：宁可报错，也不能假装已连接。
+    // TODO(field-build): 完成 BLE 扫描/连接后，仅对真正发现的设备放行。
+    throw const ObdHardwareUnavailable(unavailableMessage);
   }
 
   @override
