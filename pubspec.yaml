@@ -1,0 +1,41 @@
+name: mobile_obd_assistant
+description: Offline-first Bluetooth OBD diagnostic assistant for Android repair workflows.
+publish_to: "none"
+version: 0.1.0+1
+
+environment:
+  sdk: ">=3.9.0 <4.0.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+  flutter_localizations:
+    sdk: flutter
+  flutter_riverpod: ^3.0.3
+  flutter_blue_plus: ^2.0.0
+  fl_chart: ^1.1.1
+  drift: ^2.28.2
+  sqlite3_flutter_libs: ^0.5.39
+  path_provider: ^2.1.5
+  path: ^1.9.1
+  freezed_annotation: ^3.1.0
+  json_annotation: ^4.9.0
+  intl: ^0.20.2
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  integration_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+  build_runner: ^2.7.1
+  drift_dev: ^2.28.1
+  freezed: ^3.2.3
+  json_serializable: ^6.11.1
+
+flutter:
+  uses-material-design: true
+  assets:
+    - assets/offline_vehicle_library.json
+    - assets/fault_cases.json
+    - assets/config/pid_catalog.json

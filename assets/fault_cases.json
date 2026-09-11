@@ -1,0 +1,138 @@
+{
+  "cases": [
+    {
+      "id": "case_lean_p0171",
+      "name": "案例 A：怠速抖动，P0171 系统过稀",
+      "vehicle": "紧凑型轿车 1.5T 国六",
+      "ecus": ["ECM", "TCM", "ABS", "BCM"],
+      "codes": [
+        {
+          "code": "P0171",
+          "title": "系统过稀 Bank 1",
+          "ecu": "ECM",
+          "severity": "中",
+          "description": "ECM 根据闭环燃油修正判断 Bank 1 混合气长期偏稀。",
+          "relatedPids": ["stft_b1", "ltft_b1", "maf", "o2_b1s1", "rpm"],
+          "candidateCauses": [
+            "进气系统存在未计量空气泄漏",
+            "空气流量计污染或信号偏低",
+            "燃油压力不足或喷油量不足",
+            "前氧传感器反馈异常"
+          ]
+        }
+      ],
+      "freezeFrame": {
+        "engineRpm": 760,
+        "vehicleSpeed": 0,
+        "coolantTemp": 88,
+        "fuelTrimShort": 18.4,
+        "fuelTrimLong": 21.8,
+        "load": 22.0
+      },
+      "steps": [
+        {
+          "id": "lean_step_1",
+          "title": "复核冻结帧与当前燃油修正",
+          "method": "怠速热车后观察 STFT/LTFT，轻踩油门至 2500 rpm 并记录变化。",
+          "expected": "怠速偏高且转速升高后明显回落时，优先检查进气泄漏。",
+          "relatedPids": ["stft_b1", "ltft_b1", "rpm"]
+        },
+        {
+          "id": "lean_step_2",
+          "title": "检查进气泄漏",
+          "method": "检查进气软管、真空管、PCV 和制动助力管，必要时烟雾测试。",
+          "expected": "修复泄漏后燃油修正应回到 +/-10% 范围。",
+          "relatedPids": ["stft_b1", "ltft_b1"]
+        },
+        {
+          "id": "lean_step_3",
+          "title": "核对 MAF 与氧传感器反馈",
+          "method": "记录怠速空气流量和前氧传感器电压/等效比变化。",
+          "expected": "MAF 怠速读数应稳定，前氧反馈应能随加浓/稀释变化。",
+          "relatedPids": ["maf", "o2_b1s1"]
+        }
+      ],
+      "beforeReadings": {
+        "rpm": 760,
+        "stft_b1": 18.4,
+        "ltft_b1": 21.8,
+        "maf": 1.7,
+        "o2_b1s1": 0.12
+      },
+      "afterReadings": {
+        "rpm": 735,
+        "stft_b1": 3.2,
+        "ltft_b1": 5.4,
+        "maf": 2.8,
+        "o2_b1s1": 0.61
+      }
+    },
+    {
+      "id": "case_misfire_p0302",
+      "name": "案例 B：加速顿挫，P0302 二缸失火",
+      "vehicle": "城市 SUV 2.0L 自吸",
+      "ecus": ["ECM", "ABS", "EPS", "SRS"],
+      "codes": [
+        {
+          "code": "P0302",
+          "title": "二缸检测到失火",
+          "ecu": "ECM",
+          "severity": "高",
+          "description": "ECM 根据曲轴转速波动识别二缸燃烧贡献异常。",
+          "relatedPids": ["misfire_cyl2", "injector_pw", "ignition_advance", "rpm", "coolant"],
+          "candidateCauses": [
+            "二缸点火线圈或火花塞工作异常",
+            "二缸喷油器堵塞或控制线路接触不良",
+            "二缸机械压缩不足",
+            "进气歧管局部漏气影响二缸混合气"
+          ]
+        }
+      ],
+      "freezeFrame": {
+        "engineRpm": 2140,
+        "vehicleSpeed": 42,
+        "coolantTemp": 91,
+        "fuelTrimShort": 6.1,
+        "fuelTrimLong": 4.8,
+        "load": 48.0
+      },
+      "steps": [
+        {
+          "id": "misfire_step_1",
+          "title": "确认失火计数复现条件",
+          "method": "热车后 1500-2500 rpm 轻负荷试车，记录二缸失火计数是否持续增加。",
+          "expected": "只有二缸计数增加时，再进入缸别部件互换或电路检查。",
+          "relatedPids": ["misfire_cyl2", "rpm"]
+        },
+        {
+          "id": "misfire_step_2",
+          "title": "点火部件互换验证",
+          "method": "将二缸点火线圈与相邻缸互换，清码试车并观察失火是否转移。",
+          "expected": "失火随线圈转移时，候选原因锁定为该线圈；未转移继续检测。",
+          "relatedPids": ["misfire_cyl2", "ignition_advance"]
+        },
+        {
+          "id": "misfire_step_3",
+          "title": "喷油与机械状态检查",
+          "method": "听诊喷油器、测量喷油脉宽，必要时进行缸压或泄漏测试。",
+          "expected": "喷油脉宽正常但缸压偏低时，应转入机械故障排查。",
+          "relatedPids": ["injector_pw", "misfire_cyl2"]
+        }
+      ],
+      "beforeReadings": {
+        "rpm": 2140,
+        "misfire_cyl2": 18,
+        "injector_pw": 3.8,
+        "ignition_advance": 12,
+        "coolant": 91
+      },
+      "afterReadings": {
+        "rpm": 2100,
+        "misfire_cyl2": 0,
+        "injector_pw": 3.6,
+        "ignition_advance": 18,
+        "coolant": 90
+      }
+    }
+  ]
+}

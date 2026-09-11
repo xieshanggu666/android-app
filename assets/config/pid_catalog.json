@@ -1,0 +1,94 @@
+{
+  "pids": [
+    {
+      "id": "rpm",
+      "name": "发动机转速",
+      "unit": "rpm",
+      "min": 0,
+      "max": 7000,
+      "normalLow": 650,
+      "normalHigh": 2800
+    },
+    {
+      "id": "speed",
+      "name": "车速",
+      "unit": "km/h",
+      "min": 0,
+      "max": 220,
+      "normalLow": 0,
+      "normalHigh": 120
+    },
+    {
+      "id": "stft_b1",
+      "name": "短期燃油修正 B1",
+      "unit": "%",
+      "min": -35,
+      "max": 35,
+      "normalLow": -10,
+      "normalHigh": 10
+    },
+    {
+      "id": "ltft_b1",
+      "name": "长期燃油修正 B1",
+      "unit": "%",
+      "min": -35,
+      "max": 35,
+      "normalLow": -10,
+      "normalHigh": 10
+    },
+    {
+      "id": "maf",
+      "name": "空气流量",
+      "unit": "g/s",
+      "min": 0,
+      "max": 180,
+      "normalLow": 2.0,
+      "normalHigh": 35.0
+    },
+    {
+      "id": "o2_b1s1",
+      "name": "前氧传感器 B1S1",
+      "unit": "V",
+      "min": 0,
+      "max": 1.2,
+      "normalLow": 0.1,
+      "normalHigh": 0.95
+    },
+    {
+      "id": "misfire_cyl2",
+      "name": "二缸失火计数",
+      "unit": "次",
+      "min": 0,
+      "max": 80,
+      "normalLow": 0,
+      "normalHigh": 2
+    },
+    {
+      "id": "injector_pw",
+      "name": "喷油脉宽",
+      "unit": "ms",
+      "min": 0,
+      "max": 25,
+      "normalLow": 2.0,
+      "normalHigh": 8.0
+    },
+    {
+      "id": "ignition_advance",
+      "name": "点火提前角",
+      "unit": "deg",
+      "min": -20,
+      "max": 60,
+      "normalLow": 5,
+      "normalHigh": 38
+    },
+    {
+      "id": "coolant",
+      "name": "冷却液温度",
+      "unit": "C",
+      "min": -40,
+      "max": 140,
+      "normalLow": 75,
+      "normalHigh": 105
+    }
+  ]
+}
