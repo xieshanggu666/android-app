@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:mobile_obd_assistant/data/offline_repository.dart';
+import 'package:mobile_obd_assistant/data/record_store.dart';
 import 'package:mobile_obd_assistant/models/diagnostics.dart';
 import 'package:mobile_obd_assistant/services/obd_source.dart';
 import 'package:mobile_obd_assistant/state/diagnostic_controller.dart';
@@ -172,10 +173,12 @@ void main() {
   late DiagnosticController controller;
   late _FakeObdSource virtualSource;
   late _FakeObdSource bluetoothSource;
+  late InMemoryRecordStore store;
 
   Future<void> createController() async {
     container = ProviderContainer(overrides: [
       offlineRepositoryProvider.overrideWithValue(_FakeRepository()),
+      recordStoreProvider.overrideWithValue(store),
       virtualObdSourceProvider.overrideWithValue(
         virtualSource = _FakeObdSource(ConnectionMode.virtual),
       ),
@@ -191,6 +194,10 @@ void main() {
       await _settle();
     }
   }
+
+  setUp(() {
+    store = InMemoryRecordStore();
+  });
 
   test('未连接 OBD 时没有实时读数，切换案例也不会注入参考值', () async {
     await createController();
@@ -215,7 +222,7 @@ void main() {
 
     controller.selectCase('case_a');
     await _settle();
-    controller.generateReport();
+    await controller.generateReport();
     final report = container.read(diagnosticControllerProvider).report!;
 
     expect(report.candidateCauses, equals(['进气泄漏']));
@@ -258,7 +265,7 @@ void main() {
       ConnectionMode.virtual,
     );
 
-    controller.generateReport();
+    await controller.generateReport();
     final report = container.read(diagnosticControllerProvider).report!;
     expect(
       report.candidateCauses.any((cause) => cause.contains('实测值偏离')),
@@ -292,7 +299,7 @@ void main() {
     expect(
         container.read(diagnosticControllerProvider).liveReadings, isNotEmpty);
 
-    controller.generateReport();
+    await controller.generateReport();
     expect(
       container
           .read(diagnosticControllerProvider)
@@ -329,7 +336,7 @@ void main() {
     expect(bluetoothSource.connectedDevice, isNull);
 
     // 失败后生成报告同样不能出现实测异常。
-    controller.generateReport();
+    await controller.generateReport();
     expect(
       container
           .read(diagnosticControllerProvider)
@@ -337,6 +344,52 @@ void main() {
           .candidateCauses
           .any((cause) => cause.contains('实测值偏离')),
       isFalse,
+    );
+  });
+
+  test('步骤结果、现场备注与报告草稿在应用重启后仍然恢复', () async {
+    await createController();
+    controller.selectCase('case_a');
+    await _settle();
+
+    // 修理工记录一个异常步骤并填写现场备注。
+    await controller.updateStep('a_step_1', StepStatus.fail, '烟雾测试发现进气管开裂');
+    await controller.generateReport();
+    final beforeReport = container.read(diagnosticControllerProvider).report!;
+    expect(beforeReport.candidateCauses, contains('进气泄漏'));
+
+    // 模拟关闭应用：丢弃容器与控制器，但保留同一个存储。
+    container.dispose();
+    await createController();
+
+    final restarted = container.read(diagnosticControllerProvider);
+    expect(restarted.selectedCase!.id, 'case_a');
+    final restored = restarted.stepResults['a_step_1']!;
+    expect(restored.status, StepStatus.fail, reason: '步骤状态重启后不能回到待检测');
+    expect(restored.note, '烟雾测试发现进气管开裂', reason: '现场备注必须离线保留');
+    expect(restarted.report, isNotNull, reason: '报告草稿重启后不能消失');
+    expect(restarted.report!.summary, beforeReport.summary);
+    expect(restarted.report!.candidateCauses, contains('进气泄漏'));
+    final restoredInReport = restarted.report!.stepResults
+        .singleWhere((r) => r.stepId == 'a_step_1');
+    expect(restoredInReport.status, StepStatus.fail);
+    expect(restoredInReport.note, '烟雾测试发现进气管开裂');
+  });
+
+  test('未填写过记录的案例重启后保持初始状态', () async {
+    await createController();
+    controller.selectCase('case_b');
+    await _settle();
+    container.dispose();
+    await createController();
+
+    final restarted = container.read(diagnosticControllerProvider);
+    expect(restarted.selectedCase!.id, 'case_a', reason: '默认选中第一个案例');
+    expect(restarted.report, isNull);
+    expect(
+      restarted.stepResults.values
+          .every((r) => r.status == StepStatus.pending),
+      isTrue,
     );
   });
 

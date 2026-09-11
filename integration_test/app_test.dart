@@ -108,4 +108,41 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.textContaining('请重新生成报告草稿'), findsOneWidget);
   });
+
+  testWidgets('关闭重启后，步骤结果、现场备注和报告草稿仍然恢复', (tester) async {
+    await tester.pumpWidget(const ObdAssistantApp());
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('步骤'));
+    await tester.pumpAndSettle();
+    final firstResultDropdown = find
+        .widgetWithText(DropdownButtonFormField<StepStatus>, '待测')
+        .first;
+    await tester.tap(firstResultDropdown);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('异常').last);
+    await tester.pumpAndSettle();
+
+    const note = '进气管卡箍松动，复测仍偏高。';
+    await tester.enterText(find.byType(TextFormField).first, note);
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('报告'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('生成报告草稿'));
+    await tester.pumpAndSettle();
+    expect(find.text(note), findsOneWidget);
+
+    // 模拟冷启动：重新挂载整个应用（新的 ProviderScope/控制器）。
+    await tester.pumpWidget(const ObdAssistantApp());
+    await tester.pumpAndSettle();
+
+    // 报告页应直接显示已保存的草稿与备注，而不是提示先生成。
+    await tester.tap(find.text('报告'));
+    await tester.pumpAndSettle();
+    expect(find.text('检测步骤记录'), findsOneWidget);
+    expect(find.text(note), findsOneWidget);
+    expect(find.text('异常'), findsWidgets);
+    expect(find.textContaining('完成检测步骤后生成报告草稿'), findsNothing);
+  });
 }

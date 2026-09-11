@@ -3,11 +3,16 @@ import 'dart:async';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../data/offline_repository.dart';
+import '../data/record_store.dart';
 import '../models/diagnostics.dart';
 import '../services/obd_source.dart';
 
 final offlineRepositoryProvider = Provider<OfflineRepository>((ref) {
   return OfflineRepository();
+});
+
+final recordStoreProvider = Provider<RecordStore>((ref) {
+  return FileRecordStore();
 });
 
 final virtualObdSourceProvider = Provider<ObdSource>((ref) {
@@ -110,6 +115,9 @@ class DiagnosticController extends Notifier<DiagnosticState> {
   StreamSubscription<Map<String, PidReading>>? _pidSubscription;
   ObdSource? _activeSource;
 
+  /// 按案例缓存已持久化的步骤结果与报告草稿，与离线存储内容保持一致。
+  final Map<String, _CaseRecord> _caseRecords = {};
+
   ObdSource _sourceFor(ObdDevice device) {
     // 按设备模式路由数据源：蓝牙模式设备绝不能走虚拟演示源。
     return switch (device.mode) {
@@ -132,16 +140,47 @@ class DiagnosticController extends Notifier<DiagnosticState> {
     final vehicles = await repository.loadVehicles();
     final cases = await repository.loadCases();
     final pidCatalog = await repository.loadPidCatalog();
+    await _hydrateRecords(cases);
     final selectedCase = cases.isEmpty ? null : cases.first;
+    final record = selectedCase == null ? null : _caseRecords[selectedCase.id];
     state = state.copyWith(
       loading: false,
       vehicles: vehicles,
       cases: cases,
       pidCatalog: pidCatalog,
       selectedCase: selectedCase,
-      stepResults: _initialResults(selectedCase),
-      warning: '当前为离线优先模式：所有候选原因均来自故障码、冻结帧和实测 PID 关联，不标记为确定结论。',
+      stepResults:
+          record?.results ?? _initialResults(selectedCase),
+      report: record?.report,
+      warning: '当前为离线优先模式：所有候选原因均来自故障码、冻结帧和实测 PID 关联，不标记为确定结论。检测步骤与报告草稿保存在本机，重启后仍可查看。',
     );
+  }
+
+  Future<void> _hydrateRecords(List<DiagnosticCase> cases) async {
+    final byCaseId = {for (final c in cases) c.id: c};
+    final loaded = await ref.read(recordStoreProvider).loadRecords();
+    final casesNode = (loaded['cases'] as Map?) ?? const {};
+    casesNode.forEach((rawId, rawNode) {
+      final caseId = rawId as String;
+      final diagnosticCase = byCaseId[caseId];
+      if (diagnosticCase == null || rawNode is! Map) {
+        return;
+      }
+      final record = _CaseRecord();
+      for (final rawStep in (rawNode['steps'] as List?) ?? const []) {
+        if (rawStep is Map) {
+          final result = _decodeResult(rawStep.cast<String, dynamic>());
+          record.results[result.stepId] = result;
+        }
+      }
+      final rawReport = rawNode['report'];
+      if (rawReport is Map) {
+        record.report = _decodeReport(
+          rawReport.cast<String, dynamic>(),
+        );
+      }
+      _caseRecords[caseId] = record;
+    });
   }
 
   Map<String, StepResult> _initialResults(DiagnosticCase? diagnosticCase) {
@@ -230,18 +269,14 @@ class DiagnosticController extends Notifier<DiagnosticState> {
     final diagnosticCase = state.cases.firstWhere((item) => item.id == id);
     // 切换案例时清空实时数据：离线案例的 beforeReadings 只是参考资料，
     // 绝不能伪装成带当前时间戳的实测读数（否则会被报告当作实测异常采信）。
+    // 步骤结果与报告草稿从本机存储恢复，而不是重置。
+    final record = _caseRecords[id];
     state = state.copyWith(
       selectedCase: diagnosticCase,
       liveReadings: const {},
       history: const {},
-      stepResults: _initialResults(diagnosticCase),
-      report: RepairReport(
-        caseId: diagnosticCase.id,
-        createdAt: DateTime.now(),
-        summary: '已切换案例，报告草稿待重新生成。',
-        candidateCauses: const [],
-        stepResults: _initialResults(diagnosticCase).values.toList(),
-      ),
+      stepResults: record?.results ?? _initialResults(diagnosticCase),
+      report: record?.report,
     );
     if (state.status == ObdConnectionStatus.connected) {
       _startPidStream();
@@ -288,7 +323,7 @@ class DiagnosticController extends Notifier<DiagnosticState> {
     );
   }
 
-  void updateStep(String stepId, StepStatus status, String note) {
+  Future<void> updateStep(String stepId, StepStatus status, String note) async {
     final result = state.stepResults[stepId];
     if (result == null) {
       return;
@@ -300,9 +335,10 @@ class DiagnosticController extends Notifier<DiagnosticState> {
       updatedAt: DateTime.now(),
     );
     state = state.copyWith(stepResults: nextResults);
+    await _persistCurrentCase();
   }
 
-  void generateReport() {
+  Future<void> generateReport() async {
     final diagnosticCase = state.selectedCase;
     if (diagnosticCase == null) {
       return;
@@ -322,6 +358,92 @@ class DiagnosticController extends Notifier<DiagnosticState> {
         candidateCauses: candidates,
         stepResults: state.stepResults.values.toList(),
       ),
+    );
+    await _persistCurrentCase();
+  }
+
+  Future<void> _persistCurrentCase() async {
+    final diagnosticCase = state.selectedCase;
+    if (diagnosticCase == null) {
+      return;
+    }
+    _caseRecords[diagnosticCase.id] = _CaseRecord(
+      results: Map<String, StepResult>.from(state.stepResults),
+      report: state.report,
+    );
+    final store = ref.read(recordStoreProvider);
+    final payload = <String, dynamic>{
+      'version': 1,
+      'cases': {
+        for (final entry in _caseRecords.entries)
+          entry.key: _encodeCaseRecord(entry.value),
+      },
+    };
+    // 持久化失败不能中断现场操作或清空内存状态；下次操作会重试写入。
+    try {
+      await store.saveRecords(payload);
+    } on Object {
+      // 保留内存中的记录，本次会话可继续使用，下一次写入会重试。
+    }
+  }
+
+  Map<String, dynamic> _encodeCaseRecord(_CaseRecord record) {
+    return {
+      'steps': [
+        for (final result in record.results.values)
+          {
+            'stepId': result.stepId,
+            'status': result.status.name,
+            'note': result.note,
+            'updatedAt': result.updatedAt.toIso8601String(),
+          },
+      ],
+      if (record.report != null)
+        'report': {
+          'caseId': record.report!.caseId,
+          'createdAt': record.report!.createdAt.toIso8601String(),
+          'summary': record.report!.summary,
+          'candidateCauses': record.report!.candidateCauses,
+          'stepResults': [
+            for (final result in record.report!.stepResults)
+              {
+                'stepId': result.stepId,
+                'status': result.status.name,
+                'note': result.note,
+                'updatedAt': result.updatedAt.toIso8601String(),
+              },
+          ],
+        },
+    };
+  }
+
+  StepResult _decodeResult(Map<String, dynamic> json) {
+    return StepResult(
+      stepId: json['stepId'] as String,
+      status: StepStatus.values.firstWhere(
+        (value) => value.name == json['status'],
+        orElse: () => StepStatus.pending,
+      ),
+      note: (json['note'] as String?) ?? '',
+      updatedAt: DateTime.tryParse((json['updatedAt'] as String?) ?? '') ??
+          DateTime.now(),
+    );
+  }
+
+  RepairReport _decodeReport(Map<String, dynamic> json) {
+    return RepairReport(
+      caseId: json['caseId'] as String,
+      createdAt:
+          DateTime.tryParse((json['createdAt'] as String?) ?? '') ??
+              DateTime.now(),
+      summary: (json['summary'] as String?) ?? '',
+      candidateCauses:
+          ((json['candidateCauses'] as List?) ?? const [])
+              .map((item) => item as String)
+              .toList(),
+      stepResults: ((json['stepResults'] as List?) ?? const [])
+          .map((item) => _decodeResult((item as Map).cast<String, dynamic>()))
+          .toList(),
     );
   }
 
@@ -345,4 +467,13 @@ class DiagnosticController extends Notifier<DiagnosticState> {
     }
     return candidates;
   }
+}
+
+/// 单个案例在本机保存的检测记录：步骤结果与报告草稿。
+class _CaseRecord {
+  _CaseRecord({Map<String, StepResult>? results, this.report})
+      : results = results ?? {};
+
+  final Map<String, StepResult> results;
+  RepairReport? report;
 }

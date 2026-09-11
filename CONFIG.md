@@ -40,9 +40,11 @@ final bluetoothObdSourceProvider = Provider<ObdSource>((ref) {
 
 ## 离线持久化
 
-`lib/data/local_database.dart` 已提供 Drift 表结构：
+步骤结果、现场备注和报告草稿会在填写/生成时立即离线保存，应用关闭重启后自动恢复（`lib/data/record_store.dart` 的 `FileRecordStore`）：JSON 经临时文件原子写入应用文档目录（使用 `path_provider`），无需代码生成；启动时由 `DiagnosticController._hydrateRecords` 按案例水合。写入失败只保留在内存中且下次操作重试，不阻断现场流程。
+
+`lib/data/local_database.dart` 同时提供后续生产落地用的 Drift 表结构：
 
 - `DiagnosticDrafts`：报告草稿
 - `TestRecords`：检测步骤记录
 
-当前原型把运行态保存在 Riverpod 状态中。生产落地时用 `build_runner` 生成 Drift 数据库，并把步骤记录、报告草稿和试车前后数据写入 SQLite。
+后续用 `build_runner` 生成 Drift `AppDatabase` 时，实现一个新的 `RecordStore`（读写 SQLite）并替换 `recordStoreProvider` 即可，controller 与 UI 无需改动。

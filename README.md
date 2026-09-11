@@ -49,7 +49,7 @@ Flutter / Dart 离线优先 OBD 诊断原型，面向修理工连接蓝牙 OBD �
 - `assets/fault_cases.json`：两个故障案例、冻结帧、检测步骤、试车前后读数
 - `assets/config/pid_catalog.json`：PID 名称、单位和正常范围
 
-应用启动后直接读取本地 assets，不依赖网络。真实项目中可把 `lib/data/local_database.dart` 的 Drift 表接到生成的 `AppDatabase`，用于持久化检测记录和报告草稿。
+应用启动后直接读取本地 assets，不依赖网络。修理工记录的检测步骤、现场备注和报告草稿会立即保存在本机文档目录，关闭重启后自动恢复；Drift 表结构位于 `lib/data/local_database.dart`，后续可替换 `lib/data/record_store.dart` 的 JSON 实现接入生成的 `AppDatabase`。
 
 ## 安全边界
 
