@@ -1090,7 +1090,13 @@ class ReportPage extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final diagnosticCase = state.selectedCase;
-    final report = state.report;
+    final rawReport = state.report;
+    // 只展示归属当前案例的草稿：切换案例后他案例的残留报告不能挂在本案例名下。
+    final report = rawReport != null &&
+            diagnosticCase != null &&
+            rawReport.caseId == diagnosticCase.id
+        ? rawReport
+        : null;
     // 报告未生成时预览当前记录；生成后展示草稿内的快照，保证报告内容与生成时间一致。
     final shownResults = report?.stepResults ?? state.stepResults.values.toList();
     final stale = report != null && _reportIsStale(report, state);

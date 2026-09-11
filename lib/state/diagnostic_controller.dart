@@ -83,7 +83,7 @@ class DiagnosticState {
     Map<String, PidReading>? liveReadings,
     Map<String, List<PidReading>>? history,
     Map<String, StepResult>? stepResults,
-    RepairReport? report,
+    Object? report = _unset,
     bool? offlineMode,
     String? warning,
   }) {
@@ -104,7 +104,7 @@ class DiagnosticState {
       liveReadings: liveReadings ?? this.liveReadings,
       history: history ?? this.history,
       stepResults: stepResults ?? this.stepResults,
-      report: report ?? this.report,
+      report: report == _unset ? this.report : report as RepairReport?,
       offlineMode: offlineMode ?? this.offlineMode,
       warning: warning ?? this.warning,
     );
@@ -167,17 +167,25 @@ class DiagnosticController extends Notifier<DiagnosticState> {
         return;
       }
       final record = _CaseRecord();
+      final ownStepIds = {for (final step in diagnosticCase.steps) step.id};
       for (final rawStep in (rawNode['steps'] as List?) ?? const []) {
         if (rawStep is Map) {
           final result = _decodeResult(rawStep.cast<String, dynamic>());
-          record.results[result.stepId] = result;
+          // 只恢复属于本案例的步骤结果，忽略历史上串案例写入的脏数据。
+          if (ownStepIds.contains(result.stepId)) {
+            record.results[result.stepId] = result;
+          }
         }
       }
       final rawReport = rawNode['report'];
       if (rawReport is Map) {
-        record.report = _decodeReport(
+        final report = _decodeReport(
           rawReport.cast<String, dynamic>(),
         );
+        // 只接受属于本案例的草稿，忽略历史上错归属写入的报告。
+        if (report.caseId == caseId) {
+          record.report = report;
+        }
       }
       _caseRecords[caseId] = record;
     });
@@ -367,9 +375,18 @@ class DiagnosticController extends Notifier<DiagnosticState> {
     if (diagnosticCase == null) {
       return;
     }
+    // 归属校验：只保存本案例的步骤，且报告草稿的 caseId 必须与当前案例一致。
+    // 防止切换案例时残留的他案例报告/步骤被错误写入本案例的本地记录。
+    final ownStepIds = {for (final step in diagnosticCase.steps) step.id};
+    final ownResults = {
+      for (final entry in state.stepResults.entries)
+        if (ownStepIds.contains(entry.key)) entry.key: entry.value,
+    };
+    final ownReport =
+        state.report?.caseId == diagnosticCase.id ? state.report : null;
     _caseRecords[diagnosticCase.id] = _CaseRecord(
-      results: Map<String, StepResult>.from(state.stepResults),
-      report: state.report,
+      results: ownResults,
+      report: ownReport,
     );
     final store = ref.read(recordStoreProvider);
     final payload = <String, dynamic>{

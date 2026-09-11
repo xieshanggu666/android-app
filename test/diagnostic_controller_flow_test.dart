@@ -393,6 +393,51 @@ void main() {
     );
   });
 
+  test('从有草稿的案例切到无草稿案例：不串显他案例报告，也不错误归属落盘', () async {
+    await createController();
+
+    // 案例 A：记录步骤并生成报告。
+    controller.selectCase('case_a');
+    await _settle();
+    await controller.updateStep('a_step_1', StepStatus.fail, 'A 的现场备注');
+    await controller.generateReport();
+    expect(container.read(diagnosticControllerProvider).report, isNotNull);
+
+    // 切到尚无草稿的案例 B：报告必须被清空，而不是残留 A 的内容。
+    controller.selectCase('case_b');
+    await _settle();
+    final stateB = container.read(diagnosticControllerProvider);
+    expect(stateB.selectedCase!.id, 'case_b');
+    expect(stateB.report, isNull,
+        reason: '案例 B 没有草稿，不能显示案例 A 的报告');
+    expect(
+      stateB.stepResults.keys,
+      ['b_step_1'],
+      reason: '步骤结果也必须是 B 自己的，不能残留 A 的 a_step_1',
+    );
+
+    // 在 B 上继续编辑（触发持久化）：错误的 A 报告不能写进 B 的本地记录。
+    await controller.updateStep('b_step_1', StepStatus.pass, 'B 的现场备注');
+
+    final stored = await store.loadRecords();
+    final cases = stored['cases'] as Map;
+    final storedB = cases['case_b'] as Map<String, dynamic>;
+    expect(storedB.containsKey('report'), isFalse,
+        reason: '案例 A 的报告绝不能归属到案例 B');
+    final storedBSteps = storedB['steps'] as List;
+    expect(storedBSteps.map((s) => (s as Map)['stepId']), ['b_step_1']);
+
+    // A 的草稿仍然完整保留，且切回 A 时恢复的是 A 自己的报告。
+    final storedA = cases['case_a'] as Map<String, dynamic>;
+    expect((storedA['report'] as Map)['caseId'], 'case_a');
+    controller.selectCase('case_a');
+    await _settle();
+    final stateA = container.read(diagnosticControllerProvider);
+    expect(stateA.report, isNotNull);
+    expect(stateA.report!.caseId, 'case_a');
+    expect(stateA.stepResults['a_step_1']!.note, 'A 的现场备注');
+  });
+
   test('PidReading 默认按虚拟来源处理（fail-safe）', () {
     final reading = PidReading(pid: 'stft', value: 18.4, timestamp: DateTime(2026));
     expect(reading.isMeasured, isFalse,
