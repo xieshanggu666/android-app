@@ -210,7 +210,7 @@ class ConnectionPage extends StatelessWidget {
         SectionTitle(
           icon: Icons.bluetooth_connected,
           title: '设备连接',
-          subtitle: _statusText(state.status),
+          subtitle: _statusText(state.status, state.connectionMode),
         ),
         FilledButton.icon(
           onPressed: state.status == ObdConnectionStatus.scanning
@@ -239,11 +239,13 @@ class ConnectionPage extends StatelessWidget {
     );
   }
 
-  String _statusText(ObdConnectionStatus status) {
+  String _statusText(ObdConnectionStatus status, ConnectionMode? mode) {
     return switch (status) {
       ObdConnectionStatus.disconnected => '未连接，支持虚拟 OBD 或真实蓝牙入口',
       ObdConnectionStatus.scanning => '正在扫描附近设备',
-      ObdConnectionStatus.connected => '已连接，正在接收实测 PID',
+      ObdConnectionStatus.connected => mode == ConnectionMode.virtual
+          ? '已连接虚拟演示设备：以下均为模拟读数，不会作为实测数据进入报告'
+          : '已连接真实蓝牙 OBD，正在接收实测 PID',
     };
   }
 }
@@ -267,7 +269,11 @@ class DeviceTile extends StatelessWidget {
           ),
         ),
         title: Text(device.name),
-        subtitle: Text('信号 ${device.signalStrength}% · ${device.mode == ConnectionMode.virtual ? '虚拟数据源' : '蓝牙设备'}'),
+        subtitle: Text(
+          device.mode == ConnectionMode.virtual
+              ? '信号 ${device.signalStrength}% · 虚拟演示数据源（模拟读数，不进报告）'
+              : '真实蓝牙设备 · 协议接入中，连接后不会用模拟值充数',
+        ),
         trailing: FilledButton.icon(
           onPressed: onConnect,
           icon: const Icon(Icons.link),
@@ -328,7 +334,9 @@ class PidPage extends StatelessWidget {
           subtitle: '默认展示与当前故障码相关的实时数据流',
         ),
         if (state.status != ObdConnectionStatus.connected)
-          const LiveReadingsUnavailableCard(),
+          const LiveReadingsUnavailableCard()
+        else if (state.connectionMode == ConnectionMode.virtual)
+          const SimulatedReadingsCard(),
         Wrap(
           spacing: 10,
           runSpacing: 10,
@@ -396,6 +404,38 @@ class LiveReadingsUnavailableCard extends StatelessWidget {
   }
 }
 
+class SimulatedReadingsCard extends StatelessWidget {
+  const SimulatedReadingsCard({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: double.infinity,
+      margin: const EdgeInsets.only(bottom: 12),
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+      decoration: BoxDecoration(
+        color: const Color(0xFFFFF4D8),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Icon(Icons.science_outlined, size: 20, color: Color(0xFF8A5A00)),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              '当前连接的是虚拟演示设备：所有读数均为模拟生成，仅用于演示界面，不会标记为实测数据，也不会写入维修报告。',
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                    color: const Color(0xFF5F4300),
+                  ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 class PidGauge extends StatelessWidget {
   const PidGauge({
     super.key,
@@ -411,21 +451,31 @@ class PidGauge extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final live = reading != null;
+    final measured = live && reading!.isMeasured;
+    final simulated = live && !reading!.isMeasured;
     final value = live
         ? reading!.value
         : reference ?? (definition.min + definition.max) / 2;
     final ratio = ((value - definition.min) / (definition.max - definition.min))
         .clamp(0.0, 1.0)
         .toDouble();
-    // 只有实时读数才按超差标红；离线参考值保持中性展示，避免被误读为现场异常。
-    final abnormal = live &&
+    // 只有真实实测读数才按超差标红；模拟读数和离线参考值保持中性展示。
+    final abnormal = measured &&
         (value < definition.normalLow || value > definition.normalHigh);
+    final cardColor = !live
+        ? const Color(0xFFF3F2EE)
+        : measured
+            ? (abnormal ? const Color(0xFFFFECE8) : Colors.white)
+            : const Color(0xFFFFF8E6);
+    final accentColor = !live
+        ? Colors.grey
+        : measured
+            ? (abnormal ? const Color(0xFFB3261E) : const Color(0xFF2E7D32))
+            : const Color(0xFF8A5A00);
     return SizedBox(
       width: 164,
       child: Card(
-        color: live
-            ? (abnormal ? const Color(0xFFFFECE8) : Colors.white)
-            : const Color(0xFFF3F2EE),
+        color: cardColor,
         child: Padding(
           padding: const EdgeInsets.all(12),
           child: Column(
@@ -437,9 +487,13 @@ class PidGauge extends StatelessWidget {
                     child: Text(definition.name, style: Theme.of(context).textTheme.labelLarge),
                   ),
                   Icon(
-                    live ? Icons.sensors : Icons.history_toggle_off,
+                    measured
+                        ? Icons.sensors
+                        : simulated
+                            ? Icons.science_outlined
+                            : Icons.history_toggle_off,
                     size: 15,
-                    color: live ? const Color(0xFF2E7D32) : Colors.grey,
+                    color: accentColor,
                   ),
                 ],
               ),
@@ -448,11 +502,7 @@ class PidGauge extends StatelessWidget {
                 minHeight: 9,
                 value: live ? ratio : null,
                 backgroundColor: const Color(0xFFE7E4DC),
-                color: abnormal
-                    ? const Color(0xFFB3261E)
-                    : live
-                        ? const Color(0xFF2E7D32)
-                        : Colors.grey,
+                color: accentColor,
               ),
               const SizedBox(height: 10),
               Text(
@@ -460,11 +510,13 @@ class PidGauge extends StatelessWidget {
                 style: Theme.of(context).textTheme.titleMedium,
               ),
               Text(
-                live
-                    ? '正常 ${definition.normalLow}-${definition.normalHigh}'
-                    : '案例维修前参考值 · 非实时',
+                measured
+                    ? '实测值 · 正常 ${definition.normalLow}-${definition.normalHigh}'
+                    : simulated
+                        ? '模拟读数 · 不写入报告'
+                        : '案例维修前参考值 · 非实时',
                 style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                      color: live ? null : Colors.grey,
+                      color: accentColor,
                     ),
               ),
             ],
@@ -487,20 +539,38 @@ class PidChart extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final simulated = series.isNotEmpty &&
+        series.every((reading) => !reading.isMeasured);
     return Card(
       child: Padding(
         padding: const EdgeInsets.all(14),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text(definition.name, style: Theme.of(context).textTheme.titleMedium),
+            Row(
+              children: [
+                Text(definition.name, style: Theme.of(context).textTheme.titleMedium),
+                if (simulated) ...[
+                  const SizedBox(width: 8),
+                  Icon(Icons.science_outlined,
+                      size: 15, color: const Color(0xFF8A5A00)),
+                  Text(
+                    '模拟',
+                    style: Theme.of(context)
+                        .textTheme
+                        .labelSmall
+                        ?.copyWith(color: const Color(0xFF8A5A00)),
+                  ),
+                ],
+              ],
+            ),
             const SizedBox(height: 12),
             SizedBox(
               height: 190,
               child: series.isEmpty
                   ? Center(
                       child: Text(
-                        '连接 OBD 后显示实时曲线',
+                        '连接真实蓝牙 OBD 后显示实测曲线',
                         style: Theme.of(context).textTheme.bodySmall?.copyWith(
                               color: Colors.grey,
                             ),
@@ -529,7 +599,9 @@ class PidChart extends StatelessWidget {
                                 FlSpot(index.toDouble(), series[index].value),
                             ],
                             isCurved: true,
-                            color: const Color(0xFF256D85),
+                            color: simulated
+                                ? const Color(0xFFB8860B)
+                                : const Color(0xFF256D85),
                             barWidth: 3,
                             dotData: const FlDotData(show: false),
                           ),
@@ -825,6 +897,7 @@ class ComparisonPage extends StatelessWidget {
     }
     final definitions = {for (final pid in state.pidCatalog) pid.id: pid};
     final live = state.status == ObdConnectionStatus.connected;
+    final measuring = state.isMeasuring;
     return WorkbenchScroll(
       children: [
         const SectionTitle(
@@ -838,6 +911,14 @@ class ComparisonPage extends StatelessWidget {
             child: Text(
               '未连接 OBD：“当前”列暂无实测读数，显示为 --；“前/后”两列为离线案例参考值。',
               style: Theme.of(context).textTheme.bodySmall?.copyWith(color: const Color(0xFF0B3D91)),
+            ),
+          )
+        else if (!measuring)
+          Padding(
+            padding: const EdgeInsets.only(bottom: 12),
+            child: Text(
+              '当前为虚拟演示连接：“当前”列是模拟读数（已标注“模拟”），不作为实测值，也不会进入维修报告。',
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(color: const Color(0xFF8A5A00)),
             ),
           ),
         Card(
@@ -857,15 +938,46 @@ class ComparisonPage extends StatelessWidget {
                       DataCell(Text(definitions[entry.key]?.name ?? entry.key)),
                       DataCell(Text(entry.value.toStringAsFixed(1))),
                       DataCell(Text((diagnosticCase.afterReadings[entry.key] ?? 0).toStringAsFixed(1))),
-                      DataCell(Text(
-                        state.liveReadings[entry.key]?.value.toStringAsFixed(1) ?? '--',
-                        style: live ? null : const TextStyle(color: Colors.grey),
-                      )),
+                      DataCell(_CurrentReadingCell(reading: state.liveReadings[entry.key])),
                     ],
                   ),
               ],
             ),
           ),
+        ),
+      ],
+    );
+  }
+}
+
+class _CurrentReadingCell extends StatelessWidget {
+  const _CurrentReadingCell({required this.reading});
+
+  final PidReading? reading;
+
+  @override
+  Widget build(BuildContext context) {
+    final current = reading;
+    if (current == null) {
+      return const Text('--', style: TextStyle(color: Colors.grey));
+    }
+    final measured = current.isMeasured;
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Text(
+          current.value.toStringAsFixed(1),
+          style: TextStyle(
+            color: measured ? null : const Color(0xFF8A5A00),
+            fontWeight: measured ? FontWeight.w600 : FontWeight.w400,
+          ),
+        ),
+        const SizedBox(width: 6),
+        Text(
+          measured ? '实测' : '模拟',
+          style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                color: measured ? const Color(0xFF2E7D32) : const Color(0xFF8A5A00),
+              ),
         ),
       ],
     );

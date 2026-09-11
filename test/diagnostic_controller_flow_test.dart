@@ -113,16 +113,22 @@ class _FakeRepository implements OfflineRepository {
 }
 
 class _FakeObdSource implements ObdSource {
+  _FakeObdSource(this.mode);
+
+  final ConnectionMode mode;
   final StreamController<Map<String, PidReading>> controller =
       StreamController<Map<String, PidReading>>.broadcast();
-  bool connected = false;
+  ObdDevice? connectedDevice;
 
   @override
   Stream<List<ObdDevice>> scan() => Stream.value(const []);
 
   @override
   Future<void> connect(ObdDevice device) async {
-    connected = true;
+    if (device.mode != mode) {
+      throw ArgumentError('设备模式 ${device.mode} 与数据源 $mode 不匹配');
+    }
+    connectedDevice = device;
   }
 
   @override
@@ -132,15 +138,22 @@ class _FakeObdSource implements ObdSource {
 
   @override
   Future<void> disconnect() async {
-    connected = false;
+    connectedDevice = null;
   }
 }
 
-const _device = ObdDevice(
+const _virtualDevice = ObdDevice(
   id: 'virtual',
   name: '虚拟 OBD',
   signalStrength: 100,
   mode: ConnectionMode.virtual,
+);
+
+const _bluetoothDevice = ObdDevice(
+  id: 'bt',
+  name: '车间 OBD-II 蓝牙适配器',
+  signalStrength: 82,
+  mode: ConnectionMode.bluetooth,
 );
 
 Future<void> _settle() => Future<void>.delayed(Duration.zero);
@@ -148,18 +161,24 @@ Future<void> _settle() => Future<void>.delayed(Duration.zero);
 void main() {
   late ProviderContainer container;
   late DiagnosticController controller;
-  late _FakeObdSource obdSource;
+  late _FakeObdSource virtualSource;
+  late _FakeObdSource bluetoothSource;
 
   Future<void> createController() async {
     container = ProviderContainer(overrides: [
       offlineRepositoryProvider.overrideWithValue(_FakeRepository()),
-      obdSourceProvider.overrideWithValue(
-        obdSource = _FakeObdSource(),
+      virtualObdSourceProvider.overrideWithValue(
+        virtualSource = _FakeObdSource(ConnectionMode.virtual),
+      ),
+      bluetoothObdSourceProvider.overrideWithValue(
+        bluetoothSource = _FakeObdSource(ConnectionMode.bluetooth),
       ),
     ]);
     addTearDown(container.dispose);
     controller = container.read(diagnosticControllerProvider.notifier);
-    for (var i = 0; i < 5 && container.read(diagnosticControllerProvider).loading; i++) {
+    for (var i = 0;
+        i < 5 && container.read(diagnosticControllerProvider).loading;
+        i++) {
       await _settle();
     }
   }
@@ -198,21 +217,71 @@ void main() {
     );
   });
 
-  test('连接后的实时异常可进入报告，断开后实时读数被清空', () async {
+  test('连接虚拟设备：模拟读数可显示但不会写成实测异常', () async {
     await createController();
 
     controller.selectCase('case_a');
     await _settle();
-    await controller.connect(_device);
-    expect(container.read(diagnosticControllerProvider).status,
-        ObdConnectionStatus.connected);
+    await controller.connect(_virtualDevice);
+    final state = container.read(diagnosticControllerProvider);
+    expect(state.status, ObdConnectionStatus.connected);
+    expect(state.connectionMode, ConnectionMode.virtual);
+    expect(state.isMeasuring, isFalse);
+    expect(virtualSource.connectedDevice, _virtualDevice);
 
-    obdSource.controller.add({
-      'stft': PidReading(pid: 'stft', value: 18.4, timestamp: DateTime.now()),
+    virtualSource.controller.add({
+      'stft': PidReading(
+        pid: 'stft',
+        value: 18.4,
+        timestamp: DateTime.now(),
+        source: ConnectionMode.virtual,
+      ),
     });
     await _settle();
     await _settle();
-    expect(container.read(diagnosticControllerProvider).liveReadings, isNotEmpty);
+    expect(
+      container
+          .read(diagnosticControllerProvider)
+          .liveReadings
+          .values
+          .single
+          .source,
+      ConnectionMode.virtual,
+    );
+
+    controller.generateReport();
+    final report = container.read(diagnosticControllerProvider).report!;
+    expect(
+      report.candidateCauses.any((cause) => cause.contains('实测值偏离')),
+      isFalse,
+      reason: '虚拟设备的模拟读数绝不能进入实测证据',
+    );
+  });
+
+  test('连接蓝牙设备：真实实测异常可进入报告，断开后实时读数被清空', () async {
+    await createController();
+
+    controller.selectCase('case_a');
+    await _settle();
+    await controller.connect(_bluetoothDevice);
+    final connected = container.read(diagnosticControllerProvider);
+    expect(connected.status, ObdConnectionStatus.connected);
+    expect(connected.connectionMode, ConnectionMode.bluetooth);
+    expect(connected.isMeasuring, isTrue);
+    expect(bluetoothSource.connectedDevice, _bluetoothDevice);
+
+    bluetoothSource.controller.add({
+      'stft': PidReading(
+        pid: 'stft',
+        value: 18.4,
+        timestamp: DateTime.now(),
+        source: ConnectionMode.bluetooth,
+      ),
+    });
+    await _settle();
+    await _settle();
+    expect(
+        container.read(diagnosticControllerProvider).liveReadings, isNotEmpty);
 
     controller.generateReport();
     expect(
@@ -227,7 +296,14 @@ void main() {
     await controller.disconnect();
     final after = container.read(diagnosticControllerProvider);
     expect(after.status, ObdConnectionStatus.disconnected);
+    expect(after.connectionMode, isNull);
     expect(after.liveReadings, isEmpty);
     expect(after.history, isEmpty);
+  });
+
+  test('PidReading 默认按虚拟来源处理（fail-safe）', () {
+    final reading = PidReading(pid: 'stft', value: 18.4, timestamp: DateTime(2026));
+    expect(reading.isMeasured, isFalse,
+        reason: '忘记标记来源的读数不能被当作实测值');
   });
 }

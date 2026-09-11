@@ -10,8 +10,12 @@ final offlineRepositoryProvider = Provider<OfflineRepository>((ref) {
   return OfflineRepository();
 });
 
-final obdSourceProvider = Provider<ObdSource>((ref) {
+final virtualObdSourceProvider = Provider<ObdSource>((ref) {
   return VirtualObdSource();
+});
+
+final bluetoothObdSourceProvider = Provider<ObdSource>((ref) {
+  return const BluetoothObdSource();
 });
 
 final diagnosticControllerProvider =
@@ -19,10 +23,14 @@ final diagnosticControllerProvider =
   DiagnosticController.new,
 );
 
+/// 用于把可空字段（如 connectionMode）显式重置回 null。
+const Object _unset = Object();
+
 class DiagnosticState {
   const DiagnosticState({
     this.loading = true,
     this.status = ObdConnectionStatus.disconnected,
+    this.connectionMode,
     this.devices = const [],
     this.vehicles = const [],
     this.cases = const [],
@@ -38,6 +46,7 @@ class DiagnosticState {
 
   final bool loading;
   final ObdConnectionStatus status;
+  final ConnectionMode? connectionMode;
   final List<ObdDevice> devices;
   final List<VehicleProfile> vehicles;
   final List<DiagnosticCase> cases;
@@ -50,9 +59,14 @@ class DiagnosticState {
   final bool offlineMode;
   final String? warning;
 
+  bool get isMeasuring =>
+      status == ObdConnectionStatus.connected &&
+      connectionMode == ConnectionMode.bluetooth;
+
   DiagnosticState copyWith({
     bool? loading,
     ObdConnectionStatus? status,
+    Object? connectionMode = _unset,
     List<ObdDevice>? devices,
     List<VehicleProfile>? vehicles,
     List<DiagnosticCase>? cases,
@@ -68,6 +82,9 @@ class DiagnosticState {
     return DiagnosticState(
       loading: loading ?? this.loading,
       status: status ?? this.status,
+      connectionMode: connectionMode == _unset
+          ? this.connectionMode
+          : connectionMode as ConnectionMode?,
       devices: devices ?? this.devices,
       vehicles: vehicles ?? this.vehicles,
       cases: cases ?? this.cases,
@@ -85,6 +102,15 @@ class DiagnosticState {
 
 class DiagnosticController extends Notifier<DiagnosticState> {
   StreamSubscription<Map<String, PidReading>>? _pidSubscription;
+  ObdSource? _activeSource;
+
+  ObdSource _sourceFor(ObdDevice device) {
+    // 按设备模式路由数据源：蓝牙模式设备绝不能走虚拟演示源。
+    return switch (device.mode) {
+      ConnectionMode.virtual => ref.read(virtualObdSourceProvider),
+      ConnectionMode.bluetooth => ref.read(bluetoothObdSourceProvider),
+    };
+  }
 
   @override
   DiagnosticState build() {
@@ -129,7 +155,12 @@ class DiagnosticController extends Notifier<DiagnosticState> {
 
   Future<void> scanDevices() async {
     state = state.copyWith(status: ObdConnectionStatus.scanning);
-    final devices = await ref.read(obdSourceProvider).scan().first;
+    // 同时扫描虚拟演示设备和真实蓝牙设备，两类入口分别标注来源。
+    final results = await Future.wait([
+      ref.read(virtualObdSourceProvider).scan().first,
+      ref.read(bluetoothObdSourceProvider).scan().first,
+    ]);
+    final devices = [for (final list in results) ...list];
     state = state.copyWith(
       status: ObdConnectionStatus.disconnected,
       devices: devices,
@@ -137,8 +168,18 @@ class DiagnosticController extends Notifier<DiagnosticState> {
   }
 
   Future<void> connect(ObdDevice device) async {
-    await ref.read(obdSourceProvider).connect(device);
-    state = state.copyWith(status: ObdConnectionStatus.connected);
+    await _pidSubscription?.cancel();
+    _pidSubscription = null;
+    final source = _sourceFor(device);
+    await source.connect(device);
+    _activeSource = source;
+    // 新连接建立前清空上一轮读数，防止把旧会话的数据归因到新设备。
+    state = state.copyWith(
+      status: ObdConnectionStatus.connected,
+      connectionMode: device.mode,
+      liveReadings: const {},
+      history: const {},
+    );
     _startPidStream();
   }
 
@@ -167,10 +208,12 @@ class DiagnosticController extends Notifier<DiagnosticState> {
   Future<void> disconnect() async {
     await _pidSubscription?.cancel();
     _pidSubscription = null;
-    await ref.read(obdSourceProvider).disconnect();
+    await _activeSource?.disconnect();
+    _activeSource = null;
     // 断开后丢弃本次会话的实时读数，避免旧值继续显示或被写入报告。
     state = state.copyWith(
       status: ObdConnectionStatus.disconnected,
+      connectionMode: null,
       liveReadings: const {},
       history: const {},
     );
@@ -178,11 +221,12 @@ class DiagnosticController extends Notifier<DiagnosticState> {
 
   void _startPidStream() {
     final diagnosticCase = state.selectedCase;
-    if (diagnosticCase == null) {
+    final source = _activeSource;
+    if (diagnosticCase == null || source == null) {
       return;
     }
     _pidSubscription?.cancel();
-    _pidSubscription = ref.read(obdSourceProvider).watchPids(diagnosticCase).listen(
+    _pidSubscription = source.watchPids(diagnosticCase).listen(
       (readings) {
         final nextHistory = {
           for (final entry in state.history.entries)
@@ -238,15 +282,17 @@ class DiagnosticController extends Notifier<DiagnosticState> {
   }
 
   List<String> _measuredCandidates(DiagnosticCase diagnosticCase) {
-    // 只有已连接 OBD 且确实收到实时数据流时，才允许把数值判为“实测异常”；
-    // 离线案例的维修前参考值不能作为实测证据进入报告。
-    if (state.status != ObdConnectionStatus.connected ||
-        state.liveReadings.isEmpty) {
+    // 只有连接真实蓝牙设备且收到标记为实测来源的读数时，才允许判为“实测异常”。
+    // 虚拟演示源的模拟波形、离线案例参考值都不能作为实测证据进入报告。
+    if (!state.isMeasuring) {
       return const [];
     }
     final definitions = {for (final pid in state.pidCatalog) pid.id: pid};
     final candidates = <String>[];
     for (final reading in state.liveReadings.values) {
+      if (!reading.isMeasured) {
+        continue;
+      }
       final definition = definitions[reading.pid];
       if (definition != null && reading.isOutOfRange(definition)) {
         candidates.add('${definition.name}实测值偏离正常范围，建议优先复核其传感器、线路和相关执行器。');

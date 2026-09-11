@@ -2,22 +2,28 @@
 
 ## 数据源
 
-默认 Provider 位于 `lib/state/diagnostic_controller.dart`：
+Provider 位于 `lib/state/diagnostic_controller.dart`，按设备模式分别注入：
 
 ```dart
-final obdSourceProvider = Provider<ObdSource>((ref) {
+final virtualObdSourceProvider = Provider<ObdSource>((ref) {
   return VirtualObdSource();
+});
+
+final bluetoothObdSourceProvider = Provider<ObdSource>((ref) {
+  return const BluetoothObdSource();
 });
 ```
 
-交付版默认使用 `VirtualObdSource`，可在完全断网、无 OBD 设备时演示完整流程。
+扫描会合并两个数据源的设备列表；连接时按 `ObdDevice.mode` 路由：`virtual` 设备只走 `VirtualObdSource`，`bluetooth` 设备只走 `BluetoothObdSource`。虚拟源产出的 `PidReading` 一律带 `source: ConnectionMode.virtual`，仅用于演示界面，不会被维修报告采信为实测数据（见 `DiagnosticState.isMeasuring` 与 `_measuredCandidates`）。
 
-接入真实 ELM327 / BLE OBD 时，将该 Provider 替换为 `BluetoothObdSource`，并在 `lib/services/obd_source.dart` 中完成：
+`VirtualObdSource` 可在完全断网、无 OBD 设备时演示完整界面流程，但读数始终标注为“模拟”。
+
+接入真实 ELM327 / BLE OBD 时，在 `lib/services/obd_source.dart` 的 `BluetoothObdSource` 中完成：
 
 - 蓝牙扫描
 - GATT 连接
 - ELM327 初始化命令
-- PID 请求/响应解析
+- PID 请求/响应解析（解析出的读数必须带 `source: ConnectionMode.bluetooth`）
 - 断线重连和超时处理
 
 ## Android 权限

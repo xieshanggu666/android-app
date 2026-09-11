@@ -55,11 +55,17 @@ class PidReading {
     required this.pid,
     required this.value,
     required this.timestamp,
+    // 默认按虚拟来源处理（fail-safe）：未显式声明为真实蓝牙的读数，
+    // 永远不能被当作实测证据写进维修报告。
+    this.source = ConnectionMode.virtual,
   });
 
   final String pid;
   final double value;
   final DateTime timestamp;
+  final ConnectionMode source;
+
+  bool get isMeasured => source == ConnectionMode.bluetooth;
 
   bool isOutOfRange(PidDefinition definition) {
     return value < definition.normalLow || value > definition.normalHigh;

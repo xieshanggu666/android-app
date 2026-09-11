@@ -17,6 +17,36 @@ void main() {
     await tester.tap(find.text('扫描蓝牙 OBD'));
     await tester.pumpAndSettle(const Duration(seconds: 1));
     expect(find.text('虚拟 ELM327 / 离线演示'), findsOneWidget);
+    expect(find.textContaining('车间 OBD-II 蓝牙适配器'), findsOneWidget);
+  });
+
+  testWidgets('虚拟设备的模拟读数全程标注，且不进入维修报告', (tester) async {
+    await tester.pumpWidget(const ObdAssistantApp());
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('扫描蓝牙 OBD'));
+    await tester.pumpAndSettle(const Duration(seconds: 1));
+
+    // 列表第一个“连接”按钮对应虚拟演示设备。
+    await tester.tap(find.text('连接').first);
+    await tester.pumpAndSettle(const Duration(seconds: 1));
+
+    // 数据页：明确提示当前为模拟读数。
+    await tester.tap(find.text('数据'));
+    await tester.pump();
+    await tester.pump(const Duration(seconds: 2));
+    expect(find.textContaining('虚拟演示设备'), findsOneWidget);
+    expect(find.textContaining('不会写入维修报告'), findsWidgets);
+
+    // 等待至少一帧模拟读数到达。
+    await tester.pump(const Duration(seconds: 1));
+
+    // 报告页：即使模拟数值超差，也不出现“实测值偏离”候选原因。
+    await tester.tap(find.text('报告'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('生成报告草稿'));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('实测值偏离'), findsNothing);
   });
 
   testWidgets('报告草稿包含已记录的步骤结果和现场备注', (tester) async {
