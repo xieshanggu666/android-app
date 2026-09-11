@@ -144,14 +144,11 @@ class DiagnosticController extends Notifier<DiagnosticState> {
 
   void selectCase(String id) {
     final diagnosticCase = state.cases.firstWhere((item) => item.id == id);
+    // 切换案例时清空实时数据：离线案例的 beforeReadings 只是参考资料，
+    // 绝不能伪装成带当前时间戳的实测读数（否则会被报告当作实测异常采信）。
     state = state.copyWith(
       selectedCase: diagnosticCase,
-      liveReadings: diagnosticCase.beforeReadings.map(
-        (pid, value) => MapEntry(
-          pid,
-          PidReading(pid: pid, value: value, timestamp: DateTime.now()),
-        ),
-      ),
+      liveReadings: const {},
       history: const {},
       stepResults: _initialResults(diagnosticCase),
       report: RepairReport(
@@ -165,6 +162,18 @@ class DiagnosticController extends Notifier<DiagnosticState> {
     if (state.status == ObdConnectionStatus.connected) {
       _startPidStream();
     }
+  }
+
+  Future<void> disconnect() async {
+    await _pidSubscription?.cancel();
+    _pidSubscription = null;
+    await ref.read(obdSourceProvider).disconnect();
+    // 断开后丢弃本次会话的实时读数，避免旧值继续显示或被写入报告。
+    state = state.copyWith(
+      status: ObdConnectionStatus.disconnected,
+      liveReadings: const {},
+      history: const {},
+    );
   }
 
   void _startPidStream() {
@@ -229,6 +238,12 @@ class DiagnosticController extends Notifier<DiagnosticState> {
   }
 
   List<String> _measuredCandidates(DiagnosticCase diagnosticCase) {
+    // 只有已连接 OBD 且确实收到实时数据流时，才允许把数值判为“实测异常”；
+    // 离线案例的维修前参考值不能作为实测证据进入报告。
+    if (state.status != ObdConnectionStatus.connected ||
+        state.liveReadings.isEmpty) {
+      return const [];
+    }
     final definitions = {for (final pid in state.pidCatalog) pid.id: pid};
     final candidates = <String>[];
     for (final reading in state.liveReadings.values) {

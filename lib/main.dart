@@ -219,6 +219,14 @@ class ConnectionPage extends StatelessWidget {
           icon: const Icon(Icons.search),
           label: const Text('扫描蓝牙 OBD'),
         ),
+        if (state.status == ObdConnectionStatus.connected) ...[
+          const SizedBox(height: 10),
+          OutlinedButton.icon(
+            onPressed: controller.disconnect,
+            icon: const Icon(Icons.link_off),
+            label: const Text('断开 OBD（清空本次实时读数）'),
+          ),
+        ],
         const SizedBox(height: 12),
         for (final device in state.devices)
           Padding(
@@ -319,6 +327,8 @@ class PidPage extends StatelessWidget {
           title: 'PID 仪表与曲线',
           subtitle: '默认展示与当前故障码相关的实时数据流',
         ),
+        if (state.status != ObdConnectionStatus.connected)
+          const LiveReadingsUnavailableCard(),
         Wrap(
           spacing: 10,
           runSpacing: 10,
@@ -327,7 +337,7 @@ class PidPage extends StatelessWidget {
               PidGauge(
                 definition: definition,
                 reading: state.liveReadings[definition.id],
-                fallback: state.selectedCase?.beforeReadings[definition.id],
+                reference: state.selectedCase?.beforeReadings[definition.id],
               ),
           ],
         ),
@@ -338,7 +348,6 @@ class PidPage extends StatelessWidget {
             child: PidChart(
               definition: definition,
               series: state.history[definition.id] ?? const [],
-              fallback: state.selectedCase?.beforeReadings[definition.id],
             ),
           ),
         FreezeFrameCard(frame: state.selectedCase?.freezeFrame),
@@ -355,41 +364,95 @@ class PidPage extends StatelessWidget {
   }
 }
 
+class LiveReadingsUnavailableCard extends StatelessWidget {
+  const LiveReadingsUnavailableCard({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: double.infinity,
+      margin: const EdgeInsets.only(bottom: 12),
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+      decoration: BoxDecoration(
+        color: const Color(0xFFE7F0FF),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Icon(Icons.bluetooth_disabled, size: 20, color: Color(0xFF0B3D91)),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              '未连接 OBD：暂无实时实测数据。下方数值仅为离线案例的维修前参考值，不会作为实测结果写入维修报告。',
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                    color: const Color(0xFF0B3D91),
+                  ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 class PidGauge extends StatelessWidget {
   const PidGauge({
     super.key,
     required this.definition,
     required this.reading,
-    required this.fallback,
+    required this.reference,
   });
 
   final PidDefinition definition;
   final PidReading? reading;
-  final double? fallback;
+  final double? reference;
 
   @override
   Widget build(BuildContext context) {
-    final value = reading?.value ?? fallback ?? definition.min;
+    final live = reading != null;
+    final value = live
+        ? reading!.value
+        : reference ?? (definition.min + definition.max) / 2;
     final ratio = ((value - definition.min) / (definition.max - definition.min))
         .clamp(0.0, 1.0)
         .toDouble();
-    final abnormal = value < definition.normalLow || value > definition.normalHigh;
+    // 只有实时读数才按超差标红；离线参考值保持中性展示，避免被误读为现场异常。
+    final abnormal = live &&
+        (value < definition.normalLow || value > definition.normalHigh);
     return SizedBox(
       width: 164,
       child: Card(
-        color: abnormal ? const Color(0xFFFFECE8) : Colors.white,
+        color: live
+            ? (abnormal ? const Color(0xFFFFECE8) : Colors.white)
+            : const Color(0xFFF3F2EE),
         child: Padding(
           padding: const EdgeInsets.all(12),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text(definition.name, style: Theme.of(context).textTheme.labelLarge),
+              Row(
+                children: [
+                  Expanded(
+                    child: Text(definition.name, style: Theme.of(context).textTheme.labelLarge),
+                  ),
+                  Icon(
+                    live ? Icons.sensors : Icons.history_toggle_off,
+                    size: 15,
+                    color: live ? const Color(0xFF2E7D32) : Colors.grey,
+                  ),
+                ],
+              ),
               const SizedBox(height: 10),
               LinearProgressIndicator(
                 minHeight: 9,
-                value: ratio,
+                value: live ? ratio : null,
                 backgroundColor: const Color(0xFFE7E4DC),
-                color: abnormal ? const Color(0xFFB3261E) : const Color(0xFF2E7D32),
+                color: abnormal
+                    ? const Color(0xFFB3261E)
+                    : live
+                        ? const Color(0xFF2E7D32)
+                        : Colors.grey,
               ),
               const SizedBox(height: 10),
               Text(
@@ -397,8 +460,12 @@ class PidGauge extends StatelessWidget {
                 style: Theme.of(context).textTheme.titleMedium,
               ),
               Text(
-                '正常 ${definition.normalLow}-${definition.normalHigh}',
-                style: Theme.of(context).textTheme.bodySmall,
+                live
+                    ? '正常 ${definition.normalLow}-${definition.normalHigh}'
+                    : '案例维修前参考值 · 非实时',
+                style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                      color: live ? null : Colors.grey,
+                    ),
               ),
             ],
           ),
@@ -413,22 +480,13 @@ class PidChart extends StatelessWidget {
     super.key,
     required this.definition,
     required this.series,
-    required this.fallback,
   });
 
   final PidDefinition definition;
   final List<PidReading> series;
-  final double? fallback;
 
   @override
   Widget build(BuildContext context) {
-    final values = series.isEmpty
-        ? List<double>.generate(8, (index) => (fallback ?? definition.normalLow) + index * 0.1)
-        : series.map((reading) => reading.value).toList();
-    final spots = [
-      for (var index = 0; index < values.length; index++)
-        FlSpot(index.toDouble(), values[index]),
-    ];
     return Card(
       child: Padding(
         padding: const EdgeInsets.all(14),
@@ -439,33 +497,45 @@ class PidChart extends StatelessWidget {
             const SizedBox(height: 12),
             SizedBox(
               height: 190,
-              child: LineChart(
-                LineChartData(
-                  minY: definition.min,
-                  maxY: definition.max,
-                  gridData: const FlGridData(show: true),
-                  borderData: FlBorderData(show: false),
-                  titlesData: const FlTitlesData(
-                    topTitles: AxisTitles(sideTitles: SideTitles(showTitles: false)),
-                    rightTitles: AxisTitles(sideTitles: SideTitles(showTitles: false)),
-                  ),
-                  extraLinesData: ExtraLinesData(
-                    horizontalLines: [
-                      HorizontalLine(y: definition.normalLow, color: Colors.green, strokeWidth: 1),
-                      HorizontalLine(y: definition.normalHigh, color: Colors.green, strokeWidth: 1),
-                    ],
-                  ),
-                  lineBarsData: [
-                    LineChartBarData(
-                      spots: spots,
-                      isCurved: true,
-                      color: const Color(0xFF256D85),
-                      barWidth: 3,
-                      dotData: const FlDotData(show: false),
+              child: series.isEmpty
+                  ? Center(
+                      child: Text(
+                        '连接 OBD 后显示实时曲线',
+                        style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                              color: Colors.grey,
+                            ),
+                      ),
+                    )
+                  : LineChart(
+                      LineChartData(
+                        minY: definition.min,
+                        maxY: definition.max,
+                        gridData: const FlGridData(show: true),
+                        borderData: FlBorderData(show: false),
+                        titlesData: const FlTitlesData(
+                          topTitles: AxisTitles(sideTitles: SideTitles(showTitles: false)),
+                          rightTitles: AxisTitles(sideTitles: SideTitles(showTitles: false)),
+                        ),
+                        extraLinesData: ExtraLinesData(
+                          horizontalLines: [
+                            HorizontalLine(y: definition.normalLow, color: Colors.green, strokeWidth: 1),
+                            HorizontalLine(y: definition.normalHigh, color: Colors.green, strokeWidth: 1),
+                          ],
+                        ),
+                        lineBarsData: [
+                          LineChartBarData(
+                            spots: [
+                              for (var index = 0; index < series.length; index++)
+                                FlSpot(index.toDouble(), series[index].value),
+                            ],
+                            isCurved: true,
+                            color: const Color(0xFF256D85),
+                            barWidth: 3,
+                            dotData: const FlDotData(show: false),
+                          ),
+                        ],
+                      ),
                     ),
-                  ],
-                ),
-              ),
             ),
           ],
         ),
@@ -754,6 +824,7 @@ class ComparisonPage extends StatelessWidget {
       return const SizedBox.shrink();
     }
     final definitions = {for (final pid in state.pidCatalog) pid.id: pid};
+    final live = state.status == ObdConnectionStatus.connected;
     return WorkbenchScroll(
       children: [
         const SectionTitle(
@@ -761,6 +832,14 @@ class ComparisonPage extends StatelessWidget {
           title: '试车前后对比',
           subtitle: '使用同一批 PID 对比维修前、维修后和当前实测值',
         ),
+        if (!live)
+          Padding(
+            padding: const EdgeInsets.only(bottom: 12),
+            child: Text(
+              '未连接 OBD：“当前”列暂无实测读数，显示为 --；“前/后”两列为离线案例参考值。',
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(color: const Color(0xFF0B3D91)),
+            ),
+          ),
         Card(
           child: SingleChildScrollView(
             scrollDirection: Axis.horizontal,
@@ -778,7 +857,10 @@ class ComparisonPage extends StatelessWidget {
                       DataCell(Text(definitions[entry.key]?.name ?? entry.key)),
                       DataCell(Text(entry.value.toStringAsFixed(1))),
                       DataCell(Text((diagnosticCase.afterReadings[entry.key] ?? 0).toStringAsFixed(1))),
-                      DataCell(Text((state.liveReadings[entry.key]?.value ?? entry.value).toStringAsFixed(1))),
+                      DataCell(Text(
+                        state.liveReadings[entry.key]?.value.toStringAsFixed(1) ?? '--',
+                        style: live ? null : const TextStyle(color: Colors.grey),
+                      )),
                     ],
                   ),
               ],
